@@ -19,11 +19,6 @@ Four extra settings control how attached images and videos in the retained chat 
 
 Depth cutoffs run before count cutoffs, so the two compose.
 
-### Media slash commands
-
-- `/ml-image-limit <n>` / `/ml-video-limit <n>` - set the count cutoffs (`-1` = unlimited).
-- `/ml-image-depth <n>` / `/ml-video-depth <n>` - set the depth cutoffs (`-1` = unlimited).
-
 ## Slash Commands
 
 ### `/ml-state`
@@ -57,6 +52,38 @@ Enable or disable the message limit for background (quiet) prompts. Just returns
 ```stscript
 // Summarize only the last 5 messages ||
 /ml-state on | /ml-limit 5 | /ml-quiet on | /summarize | /ml-state off
+```
+
+### `/ml-image-limit`
+
+Set the maximum number of most-recent images to keep in the request. Use `-1` for unlimited. Just returns the current limit if no arguments are provided.
+
+```stscript
+/ml-image-limit 2
+```
+
+### `/ml-video-limit`
+
+Set the maximum number of most-recent videos to keep in the request. Use `-1` for unlimited. Just returns the current limit if no arguments are provided.
+
+```stscript
+/ml-video-limit 1
+```
+
+### `/ml-image-depth`
+
+Only keep images from the last N messages. Use `-1` for unlimited. Just returns the current depth if no arguments are provided.
+
+```stscript
+/ml-image-depth 1
+```
+
+### `/ml-video-depth`
+
+Only keep videos from the last N messages. Use `-1` for unlimited. Just returns the current depth if no arguments are provided.
+
+```stscript
+/ml-video-depth 1
 ```
 
 ## License
