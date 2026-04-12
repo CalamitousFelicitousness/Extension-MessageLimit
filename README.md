@@ -35,7 +35,7 @@ Enable or disable the message limit. Just returns the current state if no argume
 
 ### `/ml-limit`
 
-Set the message limit. Just returns the current limit if no arguments are provided.
+Set the message limit. Use `-1` for unlimited. Just returns the current limit if no arguments are provided.
 
 ```stscript
 /ml-limit 5

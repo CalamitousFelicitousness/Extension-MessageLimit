@@ -14,7 +14,7 @@ const settingsKey = 'messageLimit';
  * @typedef {Object} MessageLimitSettings
  * @property {boolean} enabled - Whether the extension is enabled.
  * @property {boolean} quietPrompts - Whether to apply the message limit to quiet prompts.
- * @property {number} limit - Maximum number of messages to send.
+ * @property {number} limit - Maximum number of messages to send (-1 = unlimited).
  * @property {number} imageLimit - Maximum number of most-recent images to keep (-1 = unlimited).
  * @property {number} videoLimit - Maximum number of most-recent videos to keep (-1 = unlimited).
  * @property {number} imageDepth - Only keep images from the last N messages (-1 = unlimited).
@@ -46,8 +46,10 @@ globalThis.MessageLimit_interceptGeneration = function (chat, _contextSize, _abo
     if (type === 'quiet' && !settings.quietPrompts) {
         return;
     }
-    while (chat.length > settings.limit) {
-        chat.shift();
+    if (Number.isFinite(settings.limit) && settings.limit >= 0) {
+        while (chat.length > settings.limit) {
+            chat.shift();
+        }
     }
 
     const imageLimit = Number(settings.imageLimit);
@@ -193,17 +195,17 @@ function addSettings() {
     // Limit
     const parentSelectLabel = document.createElement('label');
     parentSelectLabel.htmlFor = 'messageLimitValue';
-    parentSelectLabel.textContent = context.t`Maximum messages to send`;
+    parentSelectLabel.textContent = context.t`Maximum messages to send (-1 = unlimited)`;
     const limitInput = document.createElement('input');
     limitInput.id = 'messageLimitValue';
     limitInput.type = 'number';
-    limitInput.min = String(0);
+    limitInput.min = String(-1);
     limitInput.max = String(100000);
     limitInput.step = String(1);
     limitInput.value = String(settings.limit);
     limitInput.classList.add('text_pole');
     limitInput.addEventListener('input', () => {
-        settings.limit = Math.max(0, Math.round(Number(limitInput.value)));
+        settings.limit = Math.max(-1, Math.round(Number(limitInput.value)));
         context.saveSettingsDebounced();
     });
     inlineDrawerContent.append(parentSelectLabel, limitInput);
@@ -360,11 +362,11 @@ function addCommands() {
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'ml-limit',
-        helpString: 'Set the maximum number of messages to send. If no argument is provided, return the current limit.',
+        helpString: 'Set the maximum number of messages to send. Use -1 for unlimited. If no argument is provided, return the current limit.',
         returns: 'number',
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'Maximum number of messages to send. Must be a positive integer or zero.',
+                description: 'Maximum number of messages to send. Use -1 for unlimited.',
                 typeList: ARGUMENT_TYPE.NUMBER,
                 isRequired: true,
                 acceptsMultiple: false,
@@ -376,7 +378,7 @@ function addCommands() {
                     throw new Error('Limit must be a finite number.');
                 }
 
-                context.extensionSettings[settingsKey].limit = Math.max(0, Math.round(Number(limit)));
+                context.extensionSettings[settingsKey].limit = Math.max(-1, Math.round(Number(limit)));
 
                 const input = document.getElementById('messageLimitValue');
                 if (input instanceof HTMLInputElement) {
