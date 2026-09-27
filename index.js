@@ -19,6 +19,7 @@ const settingsKey = 'messageLimit';
  * @property {number} videoLimit - Maximum number of most-recent videos to keep (-1 = unlimited).
  * @property {number} imageDepth - Only keep images from the last N messages (-1 = unlimited).
  * @property {number} videoDepth - Only keep videos from the last N messages (-1 = unlimited).
+ * @property {boolean} noteDroppedMedia - Whether to note pruned media in the message text.
  */
 const defaultSettings = Object.freeze({
     enabled: false,
@@ -28,7 +29,50 @@ const defaultSettings = Object.freeze({
     videoLimit: -1,
     imageDepth: -1,
     videoDepth: -1,
+    noteDroppedMedia: false,
 });
+
+/**
+ * Describes the setting that pruned media of one type.
+ * @param {string} type Media type
+ * @param {'depth' | 'count'} rule Pruning rule
+ * @param {number} n Setting value
+ * @returns {string} Clause stating what the setting sends
+ */
+function describeRule(type, rule, n) {
+    if (n === 0) return `no ${type}s are sent`;
+    if (rule === 'depth') {
+        return n === 1 ? `only ${type}s on the latest message are sent` : `only ${type}s on the last ${n} messages are sent`;
+    }
+    return n === 1 ? `only the newest ${type} is sent` : `only the ${n} newest ${type}s are sent`;
+}
+
+/**
+ * Returns the message text with a note about media pruned from this request.
+ * The result is sent to the model only; the stored chat message is unchanged.
+ * @param {string} mes Message text as it will be sent
+ * @param {{ type: string, rule: 'depth' | 'count' }[]} dropped Media pruned from this message
+ * @param {Record<string, { depth: number, count: number }>} limits Media settings by type
+ * @returns {string} Message text to send
+ */
+function annotateDroppedMedia(mes, dropped, limits) {
+    // Depth is the same for every item on a message, so one rule prunes each type.
+    const byType = new Map();
+    for (const { type, rule } of dropped) {
+        const entry = byType.get(type) ?? { n: 0, rule };
+        entry.n++;
+        byType.set(type, entry);
+    }
+    const counts = [];
+    const reasons = [];
+    for (const [type, { n, rule }] of byType) {
+        counts.push(`${n} ${type}${n === 1 ? '' : 's'}`);
+        reasons.push(describeRule(type, rule, limits[type][rule]));
+    }
+    const single = dropped.length === 1;
+    const note = `[Message Limit extension: ${counts.join(' and ')} on this message ${single ? 'is' : 'are'} not included in this request, because ${reasons.join(' and ')}. Earlier requests may have included the actual ${single ? 'file' : 'files'}.]`;
+    return mes ? `${mes}\n\n${note}` : note;
+}
 
 /**
  * Intercepts message generation to limit the number of messages.
@@ -67,31 +111,32 @@ globalThis.MessageLimit_interceptGeneration = function (chat, _contextSize, _abo
     let imagesKept = 0;
     let videosKept = 0;
 
-    // Returns true if this media item should be dropped from the request.
-    // Depth cutoffs are applied first (positional: relative to the end of
-    // the retained chat), then the per-type count cutoffs. Only items that
-    // survive both checks bump the counter, so limits reflect what is
-    // actually being sent rather than what is stored on the messages.
-    const shouldDrop = (item, msgIdx) => {
-        if (!item) return false;
+    // Returns the rule ('depth' or 'count') that drops this media item from
+    // the request, or null to keep it. Depth cutoffs are applied first
+    // (positional: relative to the end of the retained chat), then the
+    // per-type count cutoffs. Only items that survive both checks bump the
+    // counter, so limits reflect what is actually being sent rather than
+    // what is stored on the messages.
+    const getDropRule = (item, msgIdx) => {
+        if (!item) return null;
         const depth = chat.length - 1 - msgIdx;
         if (item.type === 'image') {
-            if (pruneImageDepth && depth >= imageDepth) return true;
+            if (pruneImageDepth && depth >= imageDepth) return 'depth';
             if (pruneImages) {
-                if (imagesKept >= imageLimit) return true;
+                if (imagesKept >= imageLimit) return 'count';
                 imagesKept++;
             }
-            return false;
+            return null;
         }
         if (item.type === 'video') {
-            if (pruneVideoDepth && depth >= videoDepth) return true;
+            if (pruneVideoDepth && depth >= videoDepth) return 'depth';
             if (pruneVideos) {
-                if (videosKept >= videoLimit) return true;
+                if (videosKept >= videoLimit) return 'count';
                 videosKept++;
             }
-            return false;
+            return null;
         }
-        return false;
+        return null;
     };
 
     for (let i = chat.length - 1; i >= 0; i--) {
@@ -102,27 +147,45 @@ globalThis.MessageLimit_interceptGeneration = function (chat, _contextSize, _abo
         }
 
         const mediaDisplay = message.extra.media_display || 'list';
+        const dropped = [];
+        let extra = message.extra;
 
         if (mediaDisplay === 'gallery') {
             const idx = Number.isInteger(message.extra.media_index) ? message.extra.media_index : 0;
             const selected = media[idx];
-            if (shouldDrop(selected, i)) {
+            const rule = getDropRule(selected, i);
+            if (rule) {
                 // Gallery mode sends only the indexed item, so dropping it
                 // means the message contributes no media at all.
-                chat[i] = { ...message, extra: { ...message.extra, media: [], media_index: 0 } };
+                dropped.push({ type: selected.type, rule });
+                extra = { ...extra, media: [], media_index: 0 };
             }
+        } else {
+            const filteredMedia = [];
+            for (const item of media) {
+                const rule = getDropRule(item, i);
+                if (rule) {
+                    dropped.push({ type: item.type, rule });
+                } else {
+                    filteredMedia.push(item);
+                }
+            }
+            if (dropped.length > 0) {
+                extra = { ...extra, media: filteredMedia };
+            }
+        }
+
+        if (dropped.length === 0) {
             continue;
         }
 
-        const filteredMedia = [];
-        for (const item of media) {
-            if (!shouldDrop(item, i)) {
-                filteredMedia.push(item);
-            }
-        }
-        if (filteredMedia.length !== media.length) {
-            chat[i] = { ...message, extra: { ...message.extra, media: filteredMedia } };
-        }
+        const mes = settings.noteDroppedMedia
+            ? annotateDroppedMedia(message.mes, dropped, {
+                image: { depth: imageDepth, count: imageLimit },
+                video: { depth: videoDepth, count: videoLimit },
+            })
+            : message.mes;
+        chat[i] = { ...message, mes, extra };
     }
 };
 
@@ -285,6 +348,26 @@ function addSettings() {
         context.saveSettingsDebounced();
     });
     inlineDrawerContent.append(videoDepthLabel, videoDepthInput);
+
+    // Note dropped media
+    const noteMediaCheckboxLabel = document.createElement('label');
+    noteMediaCheckboxLabel.classList.add('checkbox_label', 'marginTop5');
+    noteMediaCheckboxLabel.htmlFor = 'messageLimitNoteDroppedMedia';
+    noteMediaCheckboxLabel.title = context.t`Adds a note to messages whose images or videos were pruned, so the model knows they were attached.`;
+    const noteMediaCheckbox = document.createElement('input');
+    noteMediaCheckbox.id = 'messageLimitNoteDroppedMedia';
+    noteMediaCheckbox.type = 'checkbox';
+    noteMediaCheckbox.checked = settings.noteDroppedMedia;
+    noteMediaCheckbox.addEventListener('change', () => {
+        settings.noteDroppedMedia = noteMediaCheckbox.checked;
+        context.saveSettingsDebounced();
+    });
+    const noteMediaCheckboxText = document.createElement('span');
+    noteMediaCheckboxText.textContent = context.t`Note pruned media in the message`;
+    const noteMediaCheckboxTooltip = document.createElement('span');
+    noteMediaCheckboxTooltip.classList.add('fa-solid', 'fa-circle-info', 'opacity50p');
+    noteMediaCheckboxLabel.append(noteMediaCheckbox, noteMediaCheckboxText, noteMediaCheckboxTooltip);
+    inlineDrawerContent.append(noteMediaCheckboxLabel);
 }
 
 function addCommands() {
@@ -357,6 +440,42 @@ function addCommands() {
             }
 
             return String(context.extensionSettings[settingsKey].quietPrompts);
+        },
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'ml-media-note',
+        helpString: 'Change whether pruned media is noted in the message text. If no argument is provided, return the current state.',
+        returns: 'boolean',
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: 'Desired state of the pruned media note.',
+                typeList: ARGUMENT_TYPE.STRING,
+                isRequired: true,
+                acceptsMultiple: false,
+                enumProvider: commonEnumProviders.boolean('onOffToggle'),
+            }),
+        ],
+        callback: (_, state) => {
+            if (state && typeof state === 'string') {
+                switch (String(state).trim().toLowerCase()) {
+                    case 'toggle':
+                    case 't':
+                        context.extensionSettings[settingsKey].noteDroppedMedia = !context.extensionSettings[settingsKey].noteDroppedMedia;
+                        break;
+                    default:
+                        context.extensionSettings[settingsKey].noteDroppedMedia = isTrueBoolean(String(state));
+                }
+
+                const checkbox = document.getElementById('messageLimitNoteDroppedMedia');
+                if (checkbox instanceof HTMLInputElement) {
+                    checkbox.checked = context.extensionSettings[settingsKey].noteDroppedMedia;
+                }
+
+                context.saveSettingsDebounced();
+            }
+
+            return String(context.extensionSettings[settingsKey].noteDroppedMedia);
         },
     }));
 

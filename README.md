@@ -19,6 +19,8 @@ Four extra settings control how attached images and videos in the retained chat 
 
 Depth cutoffs run before count cutoffs, so the two compose.
 
+- **Note pruned media in the message** (`noteDroppedMedia`) - adds a note to the text of each message that lost media, naming this extension and the reason, so the model knows something was attached and that earlier replies may describe it. Only the request is changed; the saved chat keeps its media. Off by default.
+
 ## Slash Commands
 
 ### `/ml-state`
@@ -84,6 +86,14 @@ Only keep videos from the last N messages. Use `-1` for unlimited. Just returns 
 
 ```stscript
 /ml-video-depth 1
+```
+
+### `/ml-media-note`
+
+Enable or disable the pruned media note. Just returns the current state if no arguments are provided.
+
+```stscript
+/ml-media-note on
 ```
 
 ## License
